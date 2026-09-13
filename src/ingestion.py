@@ -33,21 +33,68 @@ def generate_paper_id(pdf_path: str) -> str:
     clean_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in filename)
     return f"{clean_name}_{file_hash}"
 
+class FallbackElement:
+    def __init__(self, element_id: str, category: str, text: str, page_number: int):
+        self.id = element_id
+        self.category = category
+        self.text = text
+        self.metadata = FallbackMetadata(page_number)
+        
+    def __str__(self):
+        return self.text
+
+
+class FallbackMetadata:
+    def __init__(self, page_number: int):
+        self.page_number = page_number
+        self.coordinates = None
+        self.parent_id = None
+
+
+def parse_pdf_with_pymupdf_fallback(pdf_path: str) -> list:
+    """
+    Robust fallback parser using PyMuPDF (fitz) to extract text blocks when Unstructured/OpenCV is unavailable.
+    """
+    doc = fitz.open(pdf_path)
+    elements = []
+    elem_idx = 0
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        text_blocks = page.get_text("blocks")
+        for b in text_blocks:
+            block_text = b[4].strip()
+            if not block_text:
+                continue
+            
+            # Simple category heuristic
+            category = "NarrativeText"
+            if len(block_text.splitlines()) == 1 and len(block_text) < 100 and block_text[0].isupper():
+                category = "Title"
+            
+            elements.append(FallbackElement(
+                element_id=f"pymupdf_{page_num+1}_{elem_idx}",
+                category=category,
+                text=block_text,
+                page_number=page_num + 1
+            ))
+            elem_idx += 1
+
+    print(f"      PyMuPDF Fallback elements extracted: {len(elements)}")
+    return elements
+
 
 def load_and_parse_pdf(pdf_path: str, strategy: str = "fast") -> list:
     """
-    Parse a PDF using Unstructured.io into separated elements.
+    Parse a PDF file into structured elements using Unstructured.io (with PyMuPDF fallback).
     
     Args:
         pdf_path: Path to the PDF file
-        strategy: Parsing strategy - 'fast' for speed, 'hi_res' for unstructured layout,
-                  'auto' to let unstructured decide
+        strategy: Parsing strategy - 'fast' for speed, 'hi_res' for unstructured layout
     
     Returns:
-        List of element dicts with content, category, and metadata
+        List of element objects with content, category, and metadata
     """
-    from unstructured.partition.pdf import partition_pdf
-
     print(f"\n[...] Parsing PDF: {Path(pdf_path).name}")
     print(f"      Strategy: {strategy}")
 
@@ -56,23 +103,17 @@ def load_and_parse_pdf(pdf_path: str, strategy: str = "fast") -> list:
     image_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        from unstructured.partition.pdf import partition_pdf
         elements = partition_pdf(
             filename=pdf_path,
             strategy=strategy,
         )
-    except Exception as e:
-        if strategy == "hi_res":
-            print(f"[WARNING] hi_res strategy failed: {type(e).__name__}: {e}")
-            print("[...] Falling back to 'fast' strategy (pdfminer only)...")
-            elements = partition_pdf(
-                filename=pdf_path,
-                strategy="fast",
-            )
-        else:
-            raise
+        print(f"      Raw elements extracted: {len(elements)}")
+        return elements
+    except (ImportError, Exception) as e:
+        print(f"[WARNING] Unstructured partition unavailable/failed ({type(e).__name__}: {e}). Using PyMuPDF text parser fallback...")
+        return parse_pdf_with_pymupdf_fallback(pdf_path)
 
-    print(f"      Raw elements extracted: {len(elements)}")
-    return elements
 
 
 def elements_to_dicts(elements: list, paper_id: str) -> list:
