@@ -3,12 +3,13 @@
 [![Live Demo](https://img.shields.io/badge/Streamlit-Live%20Demo-ff4b4b?logo=streamlit&logoColor=white)](https://researchbyrag.streamlit.app/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/framework-Streamlit%20%7C%20LangChain-red.svg)](https://streamlit.io/)
+[![Observability](https://img.shields.io/badge/Observability-LangSmith-0052CC.svg?logo=langchain&logoColor=white)](https://smith.langchain.com)
 [![LLM Provider](https://img.shields.io/badge/LLM-Groq%20%28Qwen--2.5--32b%20%2F%20Qwen--3.8--27b%29-orange.svg)](https://console.groq.com)
 [![Vector Database](https://img.shields.io/badge/VectorDB-ChromaDB-purple.svg)](https://www.trychroma.com/)
 [![Evaluation](https://img.shields.io/badge/RAGAS%20Score-0.914%20%28%2B46.7%25%29-brightgreen.svg)](#-ragas-evaluation--benchmark)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An end-to-end production-grade **Multimodal Retrieval-Augmented Generation (RAG) system** engineered specifically for complex scientific PDFs and research papers. It handles dense text, complex tabular data, embedded figures, section hierarchy, hybrid sparse-dense retrieval, safety guardrails, and rigorous RAGAS benchmarks.
+An end-to-end production-grade **Multimodal Retrieval-Augmented Generation (RAG) system** engineered specifically for complex scientific PDFs and research papers. It handles dense text, complex tabular data, embedded figures, section hierarchy, hybrid sparse-dense retrieval, safety guardrails, rigorous RAGAS benchmarks, and full **LangSmith RAG observability**.
 
 🚀 **Live Web Application**: [https://researchbyrag.streamlit.app/](https://researchbyrag.streamlit.app/)
 
@@ -20,6 +21,7 @@ An end-to-end production-grade **Multimodal Retrieval-Augmented Generation (RAG)
 - 🧩 **Section-Aware Chunking & Side-Pipelines**: Maintains document structure and heading hierarchy while creating dedicated LLM summary side-pipelines for tables and image figures.
 - ⚡ **Hybrid Dense-Sparse Retrieval**: Merges `ChromaDB` (all-MiniLM-L6-v2 vector embeddings) with `Rank-BM25` keyword search via **Reciprocal Rank Fusion (RRF)**.
 - 🔍 **Groq-Powered Query Decomposition**: Automatically splits complex multi-part user questions into focused sub-queries for parallel vector retrieval.
+- 📡 **LangSmith RAG Observability**: Complete end-to-end tracing for LLM latency, token counts, query decomposition, and vector retrieval spans in LangSmith dashboards.
 - 🛡️ **Input/Output Safety Guardrails**: Detects prompt injection, out-of-scope topics, off-topic requests, and halluncinated output, writing real-time audit logs to `data/processed/guardrail_logs.jsonl`.
 - 📊 **RAGAS Benchmark Scorecard**: Automated evaluation suite measuring Faithfulness, Answer Relevance, Context Recall, and Context Precision — integrated live into the Streamlit UI via an `ℹ️ RAG Evaluation` popover button.
 - 💻 **Interactive Streamlit Web UI**: Dynamic dark-mode dashboard featuring PDF ingestion, citation view, PyMuPDF figure viewer, raw HTML table previews, and audit log inspection.
@@ -139,10 +141,15 @@ pip install -r requirements.txt
 
 ### 3. Environment Configuration
 
-Create a `.env` file in the root directory (`rag-project/.env`) and add your Groq API key:
+Create a `.env` file in the root directory (`rag-project/.env`) with your API keys:
 
 ```env
 GROQ_API_KEY=gsk_your_actual_groq_api_key_here
+
+# LangSmith RAG Observability (Optional)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=ls__your_langsmith_api_key_here
+LANGCHAIN_PROJECT=research-assist-rag
 ```
 
 ### 4. Run the Streamlit Application

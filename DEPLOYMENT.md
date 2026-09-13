@@ -26,9 +26,14 @@ Ensure your repository includes:
 3. Select your repository, branch (`main`), and set Main file path to `app.py`.
 
 ### 3. Add Environment Secrets
-1. In the deployment configuration page (or App Settings > Secrets), add your Groq API key:
+1. In the deployment configuration page (or App Settings > Secrets), add your Groq API key and optional LangSmith API key for full RAG observability:
    ```toml
    GROQ_API_KEY = "gsk_your_groq_api_key_here"
+
+   # LangSmith RAG Observability (Optional)
+   LANGCHAIN_TRACING_V2 = "true"
+   LANGCHAIN_API_KEY = "ls__your_langsmith_api_key_here"
+   LANGCHAIN_PROJECT = "research-assist-rag"
    ```
 2. Click **Save & Deploy**.
 

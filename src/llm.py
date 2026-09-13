@@ -19,11 +19,39 @@ load_dotenv()
 from langchain_groq import ChatGroq
 
 
+def setup_langsmith() -> bool:
+    """
+    Initialize LangSmith tracing environment variables for full RAG observability.
+    Supports local .env and Streamlit Community Cloud secrets.
+    """
+    api_key = os.getenv("LANGCHAIN_API_KEY")
+    if not api_key:
+        try:
+            import streamlit as st
+            if "LANGCHAIN_API_KEY" in st.secrets:
+                api_key = st.secrets["LANGCHAIN_API_KEY"]
+                os.environ["LANGCHAIN_API_KEY"] = api_key
+        except Exception:
+            pass
+
+    if api_key:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_ENDPOINT"] = os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
+        os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "research-assist-rag")
+        return True
+    return False
+
+
+# Auto-run LangSmith setup on module import
+IS_LANGSMITH_ACTIVE = setup_langsmith()
+
+
 def get_groq_llm(model_name: str = "qwen/qwen3.8-27b", temperature: float = 0.0, max_tokens: int = 1024) -> ChatGroq:
     """
     Get initialized ChatGroq LLM instance.
     Supports local .env and Streamlit Community Cloud secrets.
     """
+    setup_langsmith()
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         try:
@@ -42,6 +70,7 @@ def get_groq_llm(model_name: str = "qwen/qwen3.8-27b", temperature: float = 0.0,
         max_tokens=max_tokens,
         api_key=api_key
     )
+
 
 
 def summarize_table_html(html_str: str, llm: ChatGroq = None) -> str:

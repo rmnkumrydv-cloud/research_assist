@@ -31,7 +31,7 @@ from src.ingestion import ingest_paper, RAW_PAPERS_DIR, PROCESSED_DIR
 from src.chunking import create_multimodal_chunks
 from src.retriever import AdvancedRetriever
 from src.guardrails import InputGuardrail, OutputGuardrail, get_guardrail_logs
-from src.llm import get_groq_llm
+from src.llm import get_groq_llm, setup_langsmith
 
 # --- Page Configuration & CSS Styling ---
 st.set_page_config(
@@ -196,10 +196,14 @@ with st.sidebar:
                 st.session_state.paper_id = paper_id
                 st.session_state.paper_name = sample_pdf.name
 
-    st.markdown("---")
-    
-    # Gate 11 Deployment Badge
+    # Gate 11 Deployment & LangSmith Badges
     st.caption("🟢 **Gate 11 Status:** Streamlit Community Cloud Ready")
+    
+    is_ls_active = setup_langsmith()
+    if is_ls_active:
+        st.caption("📡 **Observability:** LangSmith Active 🟢 (`research-assist-rag`)")
+    else:
+        st.caption("📡 **Observability:** LangSmith Configurable ⚪ (`LANGCHAIN_API_KEY`)")
     
     st.markdown("---")
 

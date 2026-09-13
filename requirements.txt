@@ -12,3 +12,4 @@ langchain-huggingface>=0.1.0
 pymupdf>=1.24.0
 pdfplumber>=0.11.0
 rank-bm25>=0.2.2
+langsmith>=0.1.0
