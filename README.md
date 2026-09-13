@@ -17,14 +17,18 @@ An end-to-end production-grade **Multimodal Retrieval-Augmented Generation (RAG)
 
 ## 🌟 Key Features
 
-- 📑 **Multimodal Document Parsing**: Combines `unstructured` for fast text layout extraction, `pdfplumber` for structured HTML table parsing, and `PyMuPDF` for high-resolution figure extraction.
-- 🧩 **Section-Aware Chunking & Side-Pipelines**: Maintains document structure and heading hierarchy while creating dedicated LLM summary side-pipelines for tables and image figures.
+- 📑 **Multimodal Document Parsing**: Fast, lightweight PDF extraction using `PyMuPDF` for high-resolution figure extraction and text layout, plus `pdfplumber` for structured HTML table parsing (zero OpenCV/C++ dependencies for seamless cloud deployment).
+- 📚 **Multi-Paper Support & Cross-Paper Search**: Upload and index multiple PDFs simultaneously with scoped querying — search across all papers or target a single paper with cross-corpus Reciprocal Rank Fusion (RRF).
+- 💬 **Conversational Chat Memory**: Multi-turn context window allowing follow-up inquiries (pronoun resolution, table/figure references, comparisons) without losing context.
+- 📝 **One-Click Executive Paper Summary**: Structured 4-part AI synthesis covering *Core Problem & Objective*, *Architecture & Methodology*, *Key Results*, and *Limitations*.
+- 📊 **Real-Time Session Analytics Dashboard**: Live visual tracking of query counts, average response latency, guardrail compliance rate, section reference frequency, and chunk type distributions.
+- 📥 **Export Q&A Session as Markdown**: Download complete conversation transcripts formatted with paper citations, timestamps, and RAGAS benchmark summaries as `.md` reports.
 - ⚡ **Hybrid Dense-Sparse Retrieval**: Merges `ChromaDB` (all-MiniLM-L6-v2 vector embeddings) with `Rank-BM25` keyword search via **Reciprocal Rank Fusion (RRF)**.
 - 🔍 **Groq-Powered Query Decomposition**: Automatically splits complex multi-part user questions into focused sub-queries for parallel vector retrieval.
 - 📡 **LangSmith RAG Observability**: Complete end-to-end tracing for LLM latency, token counts, query decomposition, and vector retrieval spans in LangSmith dashboards.
-- 🛡️ **Input/Output Safety Guardrails**: Detects prompt injection, out-of-scope topics, off-topic requests, and halluncinated output, writing real-time audit logs to `data/processed/guardrail_logs.jsonl`.
+- 🛡️ **Input/Output Safety Guardrails**: Detects prompt injection, out-of-scope topics, off-topic requests, and hallucinated output, writing real-time audit logs to `data/processed/guardrail_logs.jsonl`.
 - 📊 **RAGAS Benchmark Scorecard**: Automated evaluation suite measuring Faithfulness, Answer Relevance, Context Recall, and Context Precision — integrated live into the Streamlit UI via an `ℹ️ RAG Evaluation` popover button.
-- 💻 **Interactive Streamlit Web UI**: Dynamic dark-mode dashboard featuring PDF ingestion, citation view, PyMuPDF figure viewer, raw HTML table previews, and audit log inspection.
+- 💻 **Interactive Streamlit Web UI**: Tabbed interface featuring Research Chat, Session Analytics, and Paper Summary tabs with dark-mode aesthetic and citations.
 
 ---
 

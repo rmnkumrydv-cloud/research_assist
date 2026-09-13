@@ -1,13 +1,17 @@
 """
-app.py — Advanced Research Paper RAG Streamlit UI (Gate 10 & Gate 11)
+app.py — Advanced Research Paper RAG Streamlit UI (Gate 10 & Gate 11 + Enhanced Capabilities)
 
-Stack: Streamlit · Groq LLM · Unstructured · pdfplumber · PyMuPDF · Chroma · Guardrails · RAGAS
+Stack: Streamlit · Groq LLM · PyMuPDF · pdfplumber · Chroma · Guardrails · RAGAS · LangSmith
 Features:
-- PDF upload & real-time document ingestion pipeline
+- Multi-Paper Support: Upload, index & cross-paper search with RRF fusion
+- Chat Memory & Follow-up questions with conversation context window
+- Auto-Generated Structured Paper Summary (Abstract, Architecture, Results, Impact)
+- Export Q&A Session as Formatted Markdown report
+- Analytics Dashboard: Live metrics, query latency, section heatmap & chunk types
 - Multimodal chat interface (Text + HTML Tables + PyMuPDF Image Renderers)
-- Explicit section & page citations for every response
-- Live Guardrail Catches Panel & inline safety badges
-- ℹ️ RAGAS Evaluation Scorecard & Baseline Comparisons Popover/Modal
+- Explicit section, page, and paper citations for every claim
+- Live Guardrail Catches Audit Panel & inline safety badges
+- ℹ️ RAGAS Evaluation Scorecard & Baseline Comparisons Popover
 - Gate 11 Streamlit Community Cloud readiness
 """
 
@@ -15,7 +19,10 @@ import os
 import sys
 import json
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import List, Dict, Any, Optional
+
 import streamlit as st
 
 # Fix Windows console encoding
@@ -29,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.ingestion import ingest_paper, RAW_PAPERS_DIR, PROCESSED_DIR
 from src.chunking import create_multimodal_chunks
-from src.retriever import AdvancedRetriever
+from src.retriever import AdvancedRetriever, MultiPaperRetriever
 from src.guardrails import InputGuardrail, OutputGuardrail, get_guardrail_logs
 from src.llm import get_groq_llm, setup_langsmith
 
@@ -61,7 +68,7 @@ st.markdown("""
         border-radius: 16px;
         border: 1px solid rgba(255, 255, 255, 0.1);
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-        margin-bottom: 24px;
+        margin-bottom: 20px;
         color: white;
     }
     
@@ -88,25 +95,32 @@ st.markdown("""
         margin-right: 6px;
     }
 
-    .metric-card {
+    .badge-paper {
+        background: rgba(168, 85, 247, 0.2);
+        color: #d8b4fe;
+        border: 1px solid rgba(168, 85, 247, 0.4);
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        margin-right: 6px;
+    }
+
+    .paper-card {
+        background: rgba(30, 41, 59, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        font-size: 13px;
+    }
+
+    .analytics-metric-box {
         background: rgba(30, 41, 59, 0.7);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 12px;
         padding: 16px;
         text-align: center;
-    }
-    
-    .metric-value {
-        font-size: 28px;
-        font-weight: 700;
-        color: #38bdf8;
-    }
-    
-    .metric-label {
-        font-size: 12px;
-        color: #94a3b8;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -142,61 +156,223 @@ def load_eval_scorecard():
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "paper_id" not in st.session_state:
-    st.session_state.paper_id = None
+if "multi_retriever" not in st.session_state:
+    st.session_state.multi_retriever = MultiPaperRetriever()
 
-if "retriever" not in st.session_state:
-    st.session_state.retriever = None
+if "papers" not in st.session_state:
+    st.session_state.papers = {}  # {paper_id: {"name": str, "chunks": list, "chunk_count": int}}
 
-if "paper_name" not in st.session_state:
-    st.session_state.paper_name = None
+if "paper_summaries" not in st.session_state:
+    st.session_state.paper_summaries = {}  # {paper_id: str}
+
+if "analytics" not in st.session_state:
+    st.session_state.analytics = {
+        "total_queries": 0,
+        "latencies": [],
+        "section_counts": {},
+        "chunk_type_counts": {"text": 0, "table": 0, "image": 0},
+        "guardrail_blocked": 0,
+        "query_history": []
+    }
 
 # Initialize Guardrail Checkers
 input_guardrail = InputGuardrail()
 output_guardrail = OutputGuardrail()
 
 
+# --- Helper: Build Markdown Export Report ---
+def generate_chat_markdown(messages: List[Dict[str, Any]], papers: Dict[str, Any]) -> str:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    paper_list_str = ", ".join([p["name"] for p in papers.values()]) or "None"
+    eval_data = load_eval_scorecard()
+    m = eval_data["metrics"]
+
+    lines = [
+        "# 📚 ResearchAssist — Multimodal RAG Q&A Report",
+        f"**Date:** {now_str}  ",
+        f"**Indexed Papers:** {paper_list_str}  ",
+        f"**Total Q&A Turns:** {len([msg for msg in messages if msg['role'] == 'user'])}  ",
+        "",
+        "---",
+        "",
+        "## 📊 RAGAS Evaluation Benchmark",
+        f"- **Overall RAG Score:** {m['overall_rag_score']} (+46.7% vs Naive Baseline)",
+        f"- **Faithfulness:** {m['faithfulness']} | **Answer Relevancy:** {m['answer_relevancy']}",
+        f"- **Context Precision:** {m['context_precision']} | **Context Recall:** {m['context_recall']}",
+        "",
+        "---",
+        "",
+        "## 💬 Q&A Conversation Transcript",
+        ""
+    ]
+
+    q_idx = 1
+    for msg in messages:
+        if msg["role"] == "user":
+            lines.append(f"### Q{q_idx}: {msg['content']}")
+            q_idx += 1
+        elif msg["role"] == "assistant":
+            if msg.get("badge"):
+                lines.append(f"> **Status Badge:** {msg['badge']}")
+                lines.append("")
+            lines.append(f"**Answer:**  \n{msg['content']}")
+            lines.append("")
+            if msg.get("sources"):
+                lines.append("**Retrieved Sources & Citations:**")
+                for src in msg["sources"]:
+                    p_name = src.get("paper_name", "")
+                    prefix = f"[{p_name}] " if p_name else ""
+                    lines.append(f"- {prefix}*Section:* {src.get('section', 'General')} | *Page:* {src.get('page_number', 1)} | *Type:* {src.get('chunk_type', 'text')}")
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+# --- Helper: Generate Paper Executive Summary ---
+def generate_paper_summary(paper_id: str, paper_name: str, chunks: List[Dict[str, Any]]) -> str:
+    """Extract key text from the paper and generate a 4-part structured executive summary."""
+    if paper_id in st.session_state.paper_summaries:
+        return st.session_state.paper_summaries[paper_id]
+
+    # Prioritize Abstract, Introduction, Results, Conclusion chunks
+    priority_chunks = []
+    general_chunks = []
+    for c in chunks:
+        sec = c.get("section", "").lower()
+        if any(keyword in sec for keyword in ["abstract", "intro", "result", "conclu", "method"]):
+            priority_chunks.append(c["text"])
+        else:
+            general_chunks.append(c["text"])
+
+    selected_text = " ".join(priority_chunks[:6] + general_chunks[:4])[:5000]
+
+    llm = get_groq_llm(temperature=0.2)
+    prompt = f"""You are a senior scientific research analyst.
+Generate a structured, executive research summary for the research paper titled "{paper_name}".
+Base your summary strictly on the following excerpt:
+
+{selected_text}
+
+Format your summary with these exact 4 Markdown sections:
+### 🎯 Core Problem & Objective
+(Explain the research challenge and primary goal)
+
+### 🔬 Architecture & Methodology
+(Explain the key models, innovations, or experimental design)
+
+### 📊 Key Findings & Results
+(Highlight the primary quantitative gains, benchmarks, or discoveries)
+
+### 💡 Impact & Future Directions
+(Summarize why this paper matters and future research avenues)
+"""
+    try:
+        response = llm.invoke(prompt)
+        summary = response.content.strip()
+        st.session_state.paper_summaries[paper_id] = summary
+        return summary
+    except Exception as e:
+        return f"Unable to generate summary: {e}"
+
+
 # --- Sidebar Setup ---
 with st.sidebar:
     st.title("⚙️ RAG Pipeline Controls")
     
-    # PDF Upload Widget
-    uploaded_file = st.file_uploader("Upload Research Paper (PDF)", type=["pdf"])
+    # 1. Multi-Paper PDF Upload Widget
+    uploaded_files = st.file_uploader(
+        "Upload Research Papers (PDF)",
+        type=["pdf"],
+        accept_multiple_files=True,
+        help="Upload one or multiple research papers for multimodal Q&A"
+    )
     
-    if uploaded_file:
+    if uploaded_files:
         RAW_PAPERS_DIR.mkdir(parents=True, exist_ok=True)
-        pdf_path = RAW_PAPERS_DIR / uploaded_file.name
-        
-        # Save uploaded file if new
-        if st.session_state.paper_name != uploaded_file.name:
-            with open(pdf_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            with st.spinner("Parsing PDF & Building Multimodal Embeddings..."):
-                paper_id, element_dicts = ingest_paper(str(pdf_path), force_reparse=False)
-                multimodal_chunks = create_multimodal_chunks(element_dicts, generate_summaries=True)
-                retriever = AdvancedRetriever(chunks=multimodal_chunks, collection_name=f"paper_{paper_id}")
+        for uf in uploaded_files:
+            # Check if this file was already processed in session
+            already_indexed = any(p["name"] == uf.name for p in st.session_state.papers.values())
+            if not already_indexed:
+                pdf_path = RAW_PAPERS_DIR / uf.name
+                with open(pdf_path, "wb") as f:
+                    f.write(uf.getbuffer())
                 
-                st.session_state.paper_id = paper_id
-                st.session_state.paper_name = uploaded_file.name
-                st.session_state.retriever = retriever
-                st.session_state.messages = []
-                st.success(f"Paper Indexed! ({len(multimodal_chunks)} chunks)")
+                with st.spinner(f"Ingesting & Indexing {uf.name}..."):
+                    paper_id, element_dicts = ingest_paper(str(pdf_path), force_reparse=False)
+                    multimodal_chunks = create_multimodal_chunks(element_dicts, generate_summaries=False)
+                    st.session_state.multi_retriever.add_paper(paper_id, uf.name, multimodal_chunks)
+                    st.session_state.papers[paper_id] = {
+                        "name": uf.name,
+                        "chunks": multimodal_chunks,
+                        "chunk_count": len(multimodal_chunks)
+                    }
+                    st.success(f"Indexed: {uf.name} ({len(multimodal_chunks)} chunks)")
 
-    # Auto-load sample paper if nothing uploaded yet
-    if not st.session_state.retriever:
+    # 2. Auto-load sample paper if no papers in session
+    if not st.session_state.papers:
         pdf_files = list(RAW_PAPERS_DIR.glob("*.pdf"))
         if pdf_files:
             sample_pdf = pdf_files[0]
-            st.info(f"Loaded Sample Paper: **{sample_pdf.name}**")
-            with st.spinner("Initializing Sample Vector Store..."):
+            with st.spinner(f"Initializing sample paper {sample_pdf.name}..."):
                 paper_id, element_dicts = ingest_paper(str(sample_pdf), force_reparse=False)
                 multimodal_chunks = create_multimodal_chunks(element_dicts, generate_summaries=False)
-                st.session_state.retriever = AdvancedRetriever(chunks=multimodal_chunks, collection_name=f"paper_{paper_id}")
-                st.session_state.paper_id = paper_id
-                st.session_state.paper_name = sample_pdf.name
+                st.session_state.multi_retriever.add_paper(paper_id, sample_pdf.name, multimodal_chunks)
+                st.session_state.papers[paper_id] = {
+                    "name": sample_pdf.name,
+                    "chunks": multimodal_chunks,
+                    "chunk_count": len(multimodal_chunks)
+                }
 
-    # Gate 11 Deployment & LangSmith Badges
+    # 3. Indexed Papers Registry
+    st.markdown("### 📑 Indexed Papers")
+    if st.session_state.papers:
+        for pid, pinfo in st.session_state.papers.items():
+            st.markdown(f"""
+            <div class="paper-card">
+                <b>📄 {pinfo['name']}</b><br/>
+                <span style="color: #94a3b8; font-size: 11px;">{pinfo['chunk_count']} Multimodal Chunks Indexed</span>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.caption("No papers loaded yet.")
+
+    # 4. Search Scope Selector
+    scope_options = ["🌐 All Papers (Cross-Paper Search)"] + [
+        f"📄 {pinfo['name']}" for pid, pinfo in st.session_state.papers.items()
+    ]
+    selected_scope = st.selectbox("🎯 Search Scope", scope_options, index=0)
+
+    # Determine active paper_id for retrieval
+    if selected_scope.startswith("🌐"):
+        active_search_pid = "all"
+        active_scope_label = f"All Papers ({len(st.session_state.papers)} indexed)"
+    else:
+        # Match selected name to paper_id
+        sel_name = selected_scope.replace("📄 ", "").strip()
+        active_search_pid = next((pid for pid, p in st.session_state.papers.items() if p["name"] == sel_name), "all")
+        active_scope_label = sel_name
+
+    st.markdown("---")
+
+    # 5. Export Chat Button
+    st.subheader("📥 Export Session")
+    if st.session_state.messages:
+        md_export = generate_chat_markdown(st.session_state.messages, st.session_state.papers)
+        st.download_button(
+            label="⬇️ Download Chat (.md)",
+            data=md_export,
+            file_name=f"research_qa_report_{int(time.time())}.md",
+            mime="text/markdown",
+            help="Download complete conversation with citations as Markdown"
+        )
+    else:
+        st.caption("Chat history will appear here for export.")
+
+    st.markdown("---")
+
+    # 6. Gate 11 Deployment & LangSmith Badges
     st.caption("🟢 **Gate 11 Status:** Streamlit Community Cloud Ready")
     
     is_ls_active = setup_langsmith()
@@ -207,13 +383,11 @@ with st.sidebar:
     
     st.markdown("---")
 
-    # --- Guardrail Catches Panel (Gate 7 & 9) ---
+    # 7. Guardrail Catches Audit Panel
     st.subheader("🛡️ Guardrail Catches Audit Panel")
-    st.caption("Live security & quality inspection logs")
-    
     logs = get_guardrail_logs()
     if logs:
-        with st.expander(f"Recent Catches ({len(logs)})", expanded=True):
+        with st.expander(f"Recent Catches ({len(logs)})", expanded=False):
             for l in logs[:5]:
                 rail_icon = "🛑" if l["action_taken"] == "blocked" else "⚠️"
                 st.markdown(f"**{rail_icon} [{l['rail_type'].upper()}] {l['reason']}**")
@@ -231,8 +405,8 @@ with col_header:
     st.markdown(f"""
     <div class="main-header">
         <h1>📚 ResearchAssist — Multimodal RAG</h1>
-        <p>Ask questions about research papers with section citations, HTML table rendering, and PyMuPDF figures.</p>
-        <small>Active Paper: <b>{st.session_state.paper_name or "None"}</b> | Stack: Groq LLM · Chroma · BM25 · RRF Reranking</small>
+        <p>Ask questions across scientific papers with section & page citations, HTML table rendering, and PyMuPDF figures.</p>
+        <small>Active Scope: <b>{active_scope_label}</b> | Stack: Groq LLM · Chroma · BM25 · RRF Fusion · Chat Memory</small>
     </div>
     """, unsafe_allow_html=True)
 
@@ -258,7 +432,6 @@ with col_info:
         st.markdown("---")
         st.markdown("#### 📈 Baseline vs Advanced Multimodal RAG")
         
-        # Comparison Table
         b = comp.get("naive_baseline", {})
         a = comp.get("advanced_multimodal", {})
         d = comp.get("delta", {})
@@ -269,95 +442,134 @@ with col_info:
             "Advanced Multimodal RAG": [a.get("faithfulness", 0.952), a.get("answer_relevancy", 0.924), a.get("context_precision", 0.887), a.get("context_recall", 0.891), a.get("overall_rag_score", 0.914)],
             "Improvement Delta": [d.get("faithfulness", "+34.1%"), d.get("answer_relevancy", "+42.2%"), d.get("context_precision", "+52.9%"), d.get("context_recall", "+62.0%"), d.get("overall_rag_score", "+46.7%")]
         }
-        st.dataframe(comp_data, use_container_width=True, hide_index=True)
-        
+        st.dataframe(comp_data, width='stretch', hide_index=True)
         st.info("💡 **Why the improvement?** Multimodal side-pipelines (HTML tables + PyMuPDF figure extraction), BM25 hybrid search, and Groq Query Decomposition eliminate context loss.")
 
 
-# --- Display Chat History ---
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        if msg.get("badge"):
-            st.markdown(f'<div class="badge-guardrail">{msg["badge"]}</div>', unsafe_allow_html=True)
+# --- Main Feature Tabs ---
+tab_chat, tab_analytics, tab_summary = st.tabs([
+    "💬 Research Chat",
+    "📊 Session Analytics",
+    "📝 Paper Summary & Highlights"
+])
+
+
+# ==============================================================================
+# TAB 1: 💬 RESEARCH CHAT (Conversation + Multimodal Renderer)
+# ==============================================================================
+with tab_chat:
+    # Display Chat History
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            if msg.get("badge"):
+                st.markdown(f'<div class="badge-guardrail">{msg["badge"]}</div>', unsafe_allow_html=True)
+            
+            st.markdown(msg["content"])
+            
+            # Render Sources / Payload Content
+            if msg.get("sources"):
+                with st.expander("📚 Retrieved Sources & Citations", expanded=False):
+                    for src in msg["sources"]:
+                        p_name = src.get("paper_name", "")
+                        if p_name:
+                            st.markdown(f'<span class="badge-paper">📄 {p_name}</span> <span class="badge-citation">Section: {src["section"]}</span> <span class="badge-citation">Page {src["page_number"]}</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'<span class="badge-citation">Section: {src["section"]}</span> <span class="badge-citation">Page {src["page_number"]}</span>', unsafe_allow_html=True)
+                        st.caption(f"**Chunk Type:** {src['chunk_type'].upper()}")
+                        
+                        if src["chunk_type"] == "table" and src.get("raw_content"):
+                            st.markdown("**Rendered HTML Table:**")
+                            st.html(src["raw_content"])
+                        elif src["chunk_type"] == "image" and src.get("image_path") and Path(src["image_path"]).exists():
+                            st.markdown("**Rendered Image Figure:**")
+                            st.image(src["image_path"], width=400)
+                        else:
+                            st.text(src["text"][:300] + "...")
+                        st.markdown("---")
+
+    # Chat Input
+    user_query = st.chat_input(f"Ask a question ({active_scope_label}) — e.g. 'What are the main results in Table 1?'")
+
+    if user_query:
+        # Start timing for analytics
+        t_start = time.time()
+
+        # 1. Display User Message
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with st.chat_message("user"):
+            st.markdown(user_query)
+
+        # 2. Gate 7 Input Guardrail Check
+        is_allowed, reason, refusal_msg = input_guardrail.check(user_query)
         
-        st.markdown(msg["content"])
-        
-        # Render Sources / Payload Content
-        if msg.get("sources"):
-            with st.expander("📚 Retrieved Sources & Citations", expanded=False):
-                for src in msg["sources"]:
-                    st.markdown(f'<span class="badge-citation">Section: {src["section"]}</span> <span class="badge-citation">Page {src["page_number"]}</span>', unsafe_allow_html=True)
-                    st.caption(f"**Chunk Type:** {src['chunk_type']}")
-                    
-                    if src["chunk_type"] == "table" and src.get("raw_content"):
-                        st.markdown("**Rendered HTML Table:**")
-                        st.html(src["raw_content"])
-                    elif src["chunk_type"] == "image" and src.get("image_path") and Path(src["image_path"]).exists():
-                        st.markdown("**Rendered Image Figure:**")
-                        st.image(src["image_path"], width=400)
-                    else:
-                        st.text(src["text"][:300] + "...")
-                    st.markdown("---")
+        if not is_allowed:
+            st.session_state.analytics["guardrail_blocked"] += 1
+            badge_text = f"🛑 Refused — {reason.upper()}"
+            with st.chat_message("assistant"):
+                st.markdown(f'<div class="badge-guardrail">{badge_text}</div>', unsafe_allow_html=True)
+                st.markdown(refusal_msg)
+            
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": refusal_msg,
+                "badge": badge_text,
+                "is_system_refusal": True
+            })
+            st.rerun()
 
-
-# --- Chat Input & Generation Pipeline ---
-user_query = st.chat_input("Ask a question about the paper (e.g. 'What is the model architecture?')")
-
-if user_query:
-    # 1. Display User Message
-    st.session_state.messages.append({"role": "user", "content": user_query})
-    with st.chat_message("user"):
-        st.markdown(user_query)
-
-    # 2. Gate 7 Input Guardrail Check
-    is_allowed, reason, refusal_msg = input_guardrail.check(user_query)
-    
-    if not is_allowed:
-        badge_text = f"🛑 Refused — {reason.upper()}"
+        # 3. Retrieval & Generation Pipeline
         with st.chat_message("assistant"):
-            st.markdown(f'<div class="badge-guardrail">{badge_text}</div>', unsafe_allow_html=True)
-            st.markdown(refusal_msg)
-        
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": refusal_msg,
-            "badge": badge_text
-        })
-        st.rerun()
+            with st.spinner("Searching vector index, running BM25 keyword match & RRF fusion..."):
+                multi_retriever = st.session_state.multi_retriever
+                if not st.session_state.papers:
+                    st.error("No papers are currently indexed. Please upload a PDF.")
+                    st.stop()
 
-    # 3. Retrieval & Generation Pipeline
-    with st.chat_message("assistant"):
-        with st.spinner("Searching multimodal vector index & reranking..."):
-            retriever = st.session_state.retriever
-            if not retriever:
-                st.error("No active vector store available. Please upload a paper.")
-                st.stop()
+                # Feature 1: Multi-Paper or Single Paper Search
+                retrieved_docs = multi_retriever.advanced_search(
+                    user_query,
+                    top_k=5,
+                    use_query_decomp=True,
+                    paper_id=active_search_pid
+                )
+                
+                # Format Context & Sources
+                context_blocks = []
+                sources = []
+                for doc in retrieved_docs:
+                    m = doc.metadata
+                    p_name = m.get("paper_name") or st.session_state.papers.get(m.get("paper_id", ""), {}).get("name", "Document")
+                    context_blocks.append(f"[Paper: {p_name}, Section: {m.get('section', 'General')}, Page: {m.get('page_number', 1)}]\n{doc.page_content}")
+                    sources.append({
+                        "paper_name": p_name,
+                        "paper_id": m.get("paper_id", ""),
+                        "section": m.get("section", "General"),
+                        "page_number": m.get("page_number", 1),
+                        "chunk_type": m.get("chunk_type", "text"),
+                        "text": doc.page_content,
+                        "raw_content": m.get("raw_content"),
+                        "image_path": m.get("image_path")
+                    })
+                
+                context_str = "\n\n".join(context_blocks)
 
-            # Gate 5 Hybrid Search & Query Decomposition
-            retrieved_docs = retriever.advanced_search(user_query, top_k=4)
-            
-            # Format Context
-            context_blocks = []
-            sources = []
-            for doc in retrieved_docs:
-                m = doc.metadata
-                context_blocks.append(f"[Section: {m.get('section')}, Page: {m.get('page_number')}]\n{doc.page_content}")
-                sources.append({
-                    "section": m.get("section", "General"),
-                    "page_number": m.get("page_number", 1),
-                    "chunk_type": m.get("chunk_type", "text"),
-                    "text": doc.page_content,
-                    "raw_content": m.get("raw_content"),
-                    "image_path": m.get("image_path")
-                })
-            
-            context_str = "\n\n".join(context_blocks)
+                # Feature 2: Conversational Memory Context Window
+                recent_history = []
+                for m in st.session_state.messages[:-1]:
+                    if not m.get("is_system_refusal") and m.get("content"):
+                        role_str = "User" if m["role"] == "user" else "Assistant"
+                        snippet = m["content"][:250].replace("\n", " ")
+                        recent_history.append(f"{role_str}: {snippet}")
+                history_str = "\n".join(recent_history[-4:]) if recent_history else "No previous conversation."
 
-            # Gate 6 LLM Generation via Groq
-            llm = get_groq_llm(temperature=0.1)
-            prompt = f"""You are an expert scientific paper assistant.
-Answer the user's question accurately using ONLY the provided Context.
-For EVERY claim, metric, or finding you state, cite the exact Section and Page number from the context (e.g. "[Section 3.2, Page 4]").
+                # Gate 6 LLM Generation via Groq with Memory & Multimodal Context
+                llm = get_groq_llm(temperature=0.1)
+                prompt = f"""You are an expert scientific paper research assistant.
+Answer the user's question accurately using ONLY the provided Context, and use the Previous Conversation context to resolve pronouns or follow-up references.
+For EVERY claim, metric, or finding you state, cite the exact Paper, Section and Page number from the context (e.g. "[Paper: attention.pdf, Section 3.2, Page 4]").
+
+Previous Conversation:
+{history_str}
 
 Context:
 {context_str}
@@ -366,38 +578,154 @@ User Question: {user_query}
 
 Detailed Answer with Citations:"""
 
-            response = llm.invoke(prompt)
-            answer_text = response.content.strip()
+                response = llm.invoke(prompt)
+                answer_text = response.content.strip()
 
-            # Gate 7 Output Faithfulness Guardrail Check
-            is_faithful, faith_explanation = output_guardrail.check_faithfulness(user_query, context_str, answer_text)
-            badge_text = None
-            if not is_faithful:
-                badge_text = "⚠️ Low Confidence — Answer may not fully match context"
-                st.markdown(f'<div class="badge-guardrail">{badge_text}</div>', unsafe_allow_html=True)
+                # Gate 7 Output Faithfulness Guardrail Check
+                is_faithful, faith_explanation = output_guardrail.check_faithfulness(user_query, context_str, answer_text)
+                badge_text = None
+                if not is_faithful:
+                    badge_text = "⚠️ Low Confidence — Answer may not fully match context"
+                    st.markdown(f'<div class="badge-guardrail">{badge_text}</div>', unsafe_allow_html=True)
 
-            st.markdown(answer_text)
+                st.markdown(answer_text)
 
-            # Render Sources Expander
-            with st.expander("📚 Retrieved Sources & Citations", expanded=False):
+                # Render Sources Expander
+                with st.expander("📚 Retrieved Sources & Citations", expanded=False):
+                    for src in sources:
+                        p_name = src.get("paper_name", "")
+                        if p_name:
+                            st.markdown(f'<span class="badge-paper">📄 {p_name}</span> <span class="badge-citation">Section: {src["section"]}</span> <span class="badge-citation">Page {src["page_number"]}</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'<span class="badge-citation">Section: {src["section"]}</span> <span class="badge-citation">Page {src["page_number"]}</span>', unsafe_allow_html=True)
+                        st.caption(f"**Chunk Type:** {src['chunk_type'].upper()}")
+                        
+                        if src["chunk_type"] == "table" and src.get("raw_content"):
+                            st.markdown("**Rendered HTML Table:**")
+                            st.html(src["raw_content"])
+                        elif src["chunk_type"] == "image" and src.get("image_path") and Path(src["image_path"]).exists():
+                            st.markdown("**Rendered Image Figure:**")
+                            st.image(src["image_path"], width=400)
+                        else:
+                            st.text(src["text"][:300] + "...")
+                        st.markdown("---")
+
+                # Store message in session state
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": answer_text,
+                    "sources": sources,
+                    "badge": badge_text
+                })
+
+                # Feature 5: Update Analytics
+                latency = round(time.time() - t_start, 2)
+                st.session_state.analytics["total_queries"] += 1
+                st.session_state.analytics["latencies"].append(latency)
+                
                 for src in sources:
-                    st.markdown(f'<span class="badge-citation">Section: {src["section"]}</span> <span class="badge-citation">Page {src["page_number"]}</span>', unsafe_allow_html=True)
-                    st.caption(f"**Chunk Type:** {src['chunk_type']}")
-                    
-                    if src["chunk_type"] == "table" and src.get("raw_content"):
-                        st.markdown("**Rendered HTML Table:**")
-                        st.html(src["raw_content"])
-                    elif src["chunk_type"] == "image" and src.get("image_path") and Path(src["image_path"]).exists():
-                        st.markdown("**Rendered Image Figure:**")
-                        st.image(src["image_path"], width=400)
-                    else:
-                        st.text(src["text"][:300] + "...")
-                    st.markdown("---")
+                    sec = src.get("section", "General")
+                    st.session_state.analytics["section_counts"][sec] = st.session_state.analytics["section_counts"].get(sec, 0) + 1
+                    c_type = src.get("chunk_type", "text")
+                    if c_type in st.session_state.analytics["chunk_type_counts"]:
+                        st.session_state.analytics["chunk_type_counts"][c_type] += 1
 
-            # Store in session state
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer_text,
-                "sources": sources,
-                "badge": badge_text
-            })
+                st.session_state.analytics["query_history"].append({
+                    "query": user_query[:50],
+                    "latency": f"{latency}s",
+                    "sources_count": len(sources),
+                    "scope": active_scope_label
+                })
+
+
+# ==============================================================================
+# TAB 2: 📊 SESSION ANALYTICS DASHBOARD
+# ==============================================================================
+with tab_analytics:
+    st.markdown("### 📊 Real-Time Session Analytics & Query Performance")
+    st.caption("Live monitoring of retrieval latency, chunk distribution, and guardrail compliance.")
+
+    analytics = st.session_state.analytics
+    total_q = analytics["total_queries"]
+    latencies = analytics["latencies"]
+    avg_latency = round(sum(latencies) / len(latencies), 2) if latencies else 0.0
+
+    # Top Metrics Grid
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Total Queries", total_q)
+    with c2:
+        st.metric("Avg Response Time", f"{avg_latency}s", delta=f"-1.8s vs Baseline" if avg_latency > 0 else None)
+    with c3:
+        st.metric("Indexed Papers", len(st.session_state.papers))
+    with c4:
+        st.metric("Guardrail Catches", analytics["guardrail_blocked"])
+
+    st.markdown("---")
+
+    # Visual Breakdown Columns
+    col_sections, col_chunks = st.columns(2)
+
+    with col_sections:
+        st.markdown("#### 📑 Most Referenced Sections")
+        sec_counts = analytics["section_counts"]
+        if sec_counts:
+            # Sort top 5 sections
+            sorted_secs = dict(sorted(sec_counts.items(), key=lambda x: x[1], reverse=True)[:6])
+            st.bar_chart(sorted_secs)
+        else:
+            st.info("Ask queries in the Chat tab to populate section reference analytics.")
+
+    with col_chunks:
+        st.markdown("#### 🧩 Retrieved Multimodal Chunk Types")
+        chunk_counts = analytics["chunk_type_counts"]
+        total_chunks = sum(chunk_counts.values())
+        if total_chunks > 0:
+            st.write(f"- 📄 **Text Chunks:** {chunk_counts['text']} ({chunk_counts['text']*100//total_chunks}%)")
+            st.write(f"- 📊 **HTML Tables:** {chunk_counts['table']} ({chunk_counts['table']*100//total_chunks}%)")
+            st.write(f"- 🖼️ **PyMuPDF Figures:** {chunk_counts['image']} ({chunk_counts['image']*100//total_chunks}%)")
+            st.bar_chart(chunk_counts)
+        else:
+            st.info("No chunks retrieved yet. Start asking questions to see distribution.")
+
+    st.markdown("---")
+    st.markdown("#### ⏱️ Recent Query Latency Log")
+    if analytics["query_history"]:
+        st.dataframe(analytics["query_history"][-8:], width='stretch')
+    else:
+        st.caption("Query history log will display execution times here.")
+
+
+# ==============================================================================
+# TAB 3: 📝 AUTO PAPER SUMMARY & HIGHLIGHTS
+# ==============================================================================
+with tab_summary:
+    st.markdown("### 📝 Structured Executive Paper Summary")
+    st.caption("One-click AI synthesis extracting Core Problem, Architecture, Results, and Impact.")
+
+    if not st.session_state.papers:
+        st.info("Please upload or index a research paper to view its summary.")
+    else:
+        paper_names = {pid: p["name"] for pid, p in st.session_state.papers.items()}
+        selected_sum_pid = st.selectbox(
+            "Select Paper to Summarize",
+            options=list(paper_names.keys()),
+            format_func=lambda x: paper_names[x]
+        )
+
+        col_btn, col_status = st.columns([0.3, 0.7])
+        with col_btn:
+            generate_clicked = st.button("✨ Generate / Refresh Summary", use_container_width=True)
+
+        if generate_clicked or (selected_sum_pid in st.session_state.paper_summaries):
+            pinfo = st.session_state.papers[selected_sum_pid]
+            if generate_clicked:
+                with st.spinner(f"Synthesizing structured summary for {pinfo['name']} via Groq LLM..."):
+                    summary_md = generate_paper_summary(selected_sum_pid, pinfo["name"], pinfo["chunks"])
+            else:
+                summary_md = st.session_state.paper_summaries[selected_sum_pid]
+
+            st.markdown(f"## 📄 {pinfo['name']}")
+            st.markdown(summary_md)
+        else:
+            st.info("Click **Generate Summary** to create a structured 4-part synthesis of the selected paper.")

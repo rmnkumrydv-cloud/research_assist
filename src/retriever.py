@@ -25,7 +25,7 @@ from src.llm import get_groq_llm
 VECTOR_DB_DIR = PROJECT_ROOT / "data" / "processed" / "chroma_db"
 
 
-def chunks_to_documents(chunks: List[Dict[str, Any]]) -> List[Document]:
+def chunks_to_documents(chunks: List[Dict[str, Any]], paper_name: str = "") -> List[Document]:
     """Convert chunk dicts into LangChain Document instances with full metadata."""
     docs = []
     for c in chunks:
@@ -34,6 +34,7 @@ def chunks_to_documents(chunks: List[Dict[str, Any]]) -> List[Document]:
             metadata={
                 "chunk_id": c.get("chunk_id", ""),
                 "paper_id": c.get("paper_id", ""),
+                "paper_name": c.get("paper_name", paper_name),
                 "section": c.get("section", "General"),
                 "page_number": c.get("page_number", 1),
                 "chunk_type": c.get("chunk_type", "text"),
@@ -174,6 +175,112 @@ Output ONLY the sub-queries, one per line:"""
 
         final_reranked = self._reciprocal_rank_fusion(sub_results)
         return final_reranked[:top_k]
+
+
+class MultiPaperRetriever:
+    """
+    Multi-Paper Retriever supporting indexing and cross-paper search
+    across multiple AdvancedRetriever instances using Reciprocal Rank Fusion (RRF).
+    """
+    def __init__(self):
+        self.retrievers: Dict[str, AdvancedRetriever] = {}
+        self.paper_names: Dict[str, str] = {}
+        self.paper_chunks: Dict[str, List[Dict[str, Any]]] = {}
+
+    def add_paper(
+        self,
+        paper_id: str,
+        paper_name: str,
+        chunks: List[Dict[str, Any]],
+        retriever: Optional[AdvancedRetriever] = None
+    ) -> AdvancedRetriever:
+        """Register or index a paper retriever."""
+        if retriever is None:
+            retriever = AdvancedRetriever(chunks=chunks, collection_name=f"paper_{paper_id}")
+        self.retrievers[paper_id] = retriever
+        self.paper_names[paper_id] = paper_name
+        self.paper_chunks[paper_id] = chunks
+        return retriever
+
+    def get_paper_chunks(self, paper_id: str) -> List[Dict[str, Any]]:
+        """Return the chunks for a given paper."""
+        return self.paper_chunks.get(paper_id, [])
+
+    def get_all_papers(self) -> Dict[str, Dict[str, Any]]:
+        """Return metadata about all registered papers."""
+        return {
+            pid: {
+                "name": self.paper_names.get(pid, pid),
+                "chunk_count": len(self.paper_chunks.get(pid, []))
+            }
+            for pid in self.retrievers
+        }
+
+    def remove_paper(self, paper_id: str):
+        """Remove a paper from the retriever registry."""
+        if paper_id in self.retrievers:
+            del self.retrievers[paper_id]
+        if paper_id in self.paper_names:
+            del self.paper_names[paper_id]
+        if paper_id in self.paper_chunks:
+            del self.paper_chunks[paper_id]
+
+    def advanced_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        use_query_decomp: bool = True,
+        paper_id: Optional[str] = None
+    ) -> List[Document]:
+        """
+        Perform advanced search across a specific paper or all registered papers.
+        Uses RRF fusion to merge rankings across papers when querying all.
+        """
+        if not self.retrievers:
+            return []
+
+        # If specific paper selected and exists
+        if paper_id and paper_id != "all":
+            if paper_id in self.retrievers:
+                docs = self.retrievers[paper_id].advanced_search(
+                    query, top_k=top_k, use_query_decomp=use_query_decomp
+                )
+                for d in docs:
+                    if "paper_name" not in d.metadata or not d.metadata["paper_name"]:
+                        d.metadata["paper_name"] = self.paper_names.get(paper_id, paper_id)
+                    d.metadata["paper_id"] = paper_id
+                return docs
+            return []
+
+        # Query all papers and merge using RRF
+        paper_results = []
+        for pid, ret in self.retrievers.items():
+            docs = ret.advanced_search(query, top_k=top_k, use_query_decomp=use_query_decomp)
+            for d in docs:
+                d.metadata["paper_name"] = self.paper_names.get(pid, pid)
+                d.metadata["paper_id"] = pid
+            if docs:
+                paper_results.append(docs)
+
+        if not paper_results:
+            return []
+        if len(paper_results) == 1:
+            return paper_results[0][:top_k]
+
+        # Reciprocal Rank Fusion across papers
+        doc_scores: Dict[str, float] = {}
+        doc_map: Dict[str, Document] = {}
+        k = 60
+        for doc_list in paper_results:
+            for rank, doc in enumerate(doc_list, start=1):
+                uid = f"{doc.metadata.get('paper_id')}_{doc.metadata.get('chunk_id') or doc.page_content[:60]}"
+                doc_map[uid] = doc
+                if uid not in doc_scores:
+                    doc_scores[uid] = 0.0
+                doc_scores[uid] += 1.0 / (k + rank)
+
+        sorted_uids = sorted(doc_scores.keys(), key=lambda u: doc_scores[u], reverse=True)
+        return [doc_map[u] for u in sorted_uids][:top_k]
 
 
 def main():
