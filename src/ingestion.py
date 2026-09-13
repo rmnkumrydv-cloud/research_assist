@@ -1,8 +1,8 @@
 """
 ingestion.py — Document Ingestion & Parsing (Gate 1)
 
-Loads raw PDF research papers using Unstructured.io and separates them
-into text, table, and image elements. Saves parsed elements to JSON
+Loads raw PDF research papers using PyMuPDF (text + images) and pdfplumber (tables),
+separating them into text, table, and image elements. Saves parsed elements to JSON
 for reuse without re-parsing.
 
 Pass criteria: Running this on a sample paper prints a count of
@@ -17,6 +17,9 @@ from pathlib import Path
 from collections import Counter
 
 sys.stdout.reconfigure(encoding='utf-8')
+
+import pymupdf as fitz
+import pdfplumber
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -33,28 +36,27 @@ def generate_paper_id(pdf_path: str) -> str:
     clean_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in filename)
     return f"{clean_name}_{file_hash}"
 
-class FallbackElement:
-    def __init__(self, element_id: str, category: str, text: str, page_number: int):
-        self.id = element_id
-        self.category = category
-        self.text = text
-        self.metadata = FallbackMetadata(page_number)
-        
-    def __str__(self):
-        return self.text
 
-
-class FallbackMetadata:
-    def __init__(self, page_number: int):
-        self.page_number = page_number
-        self.coordinates = None
-        self.parent_id = None
-
-
-def parse_pdf_with_pymupdf_fallback(pdf_path: str) -> list:
+def load_and_parse_pdf(pdf_path: str, strategy: str = "fast") -> list:
     """
-    Robust fallback parser using PyMuPDF (fitz) to extract text blocks when Unstructured/OpenCV is unavailable.
+    Parse a PDF using PyMuPDF into structured text block elements.
+    Each element has .id, .category, .text, and .metadata attributes
+    for compatibility with the downstream pipeline.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        strategy: Kept for API compatibility (always uses PyMuPDF)
+    
+    Returns:
+        List of element objects with content, category, and metadata
     """
+    print(f"\n[...] Parsing PDF: {Path(pdf_path).name}")
+    print(f"      Engine: PyMuPDF + pdfplumber")
+
+    # Ensure image output dir exists
+    image_dir = PROCESSED_DIR / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
     doc = fitz.open(pdf_path)
     elements = []
     elem_idx = 0
@@ -63,16 +65,23 @@ def parse_pdf_with_pymupdf_fallback(pdf_path: str) -> list:
         page = doc[page_num]
         text_blocks = page.get_text("blocks")
         for b in text_blocks:
+            # b = (x0, y0, x1, y1, text, block_no, block_type)
+            # block_type: 0 = text, 1 = image
+            if b[6] == 1:  # image block — skip here, handled by extract_images_with_pymupdf
+                continue
             block_text = b[4].strip()
             if not block_text:
                 continue
             
-            # Simple category heuristic
+            # Category heuristic
             category = "NarrativeText"
-            if len(block_text.splitlines()) == 1 and len(block_text) < 100 and block_text[0].isupper():
-                category = "Title"
+            lines = block_text.splitlines()
+            if len(lines) == 1 and len(block_text) < 120:
+                first_char = block_text[0] if block_text else ""
+                if first_char.isupper() or first_char.isdigit():
+                    category = "Title"
             
-            elements.append(FallbackElement(
+            elements.append(_PyMuPDFElement(
                 element_id=f"pymupdf_{page_num+1}_{elem_idx}",
                 category=category,
                 text=block_text,
@@ -80,45 +89,36 @@ def parse_pdf_with_pymupdf_fallback(pdf_path: str) -> list:
             ))
             elem_idx += 1
 
-    print(f"      PyMuPDF Fallback elements extracted: {len(elements)}")
+    doc.close()
+    print(f"      Raw elements extracted: {len(elements)}")
     return elements
 
 
-def load_and_parse_pdf(pdf_path: str, strategy: str = "fast") -> list:
-    """
-    Parse a PDF file into structured elements using Unstructured.io (with PyMuPDF fallback).
-    
-    Args:
-        pdf_path: Path to the PDF file
-        strategy: Parsing strategy - 'fast' for speed, 'hi_res' for unstructured layout
-    
-    Returns:
-        List of element objects with content, category, and metadata
-    """
-    print(f"\n[...] Parsing PDF: {Path(pdf_path).name}")
-    print(f"      Strategy: {strategy}")
+class _PyMuPDFElement:
+    """Lightweight element class compatible with Unstructured element interface."""
+    def __init__(self, element_id: str, category: str, text: str, page_number: int):
+        self.id = element_id
+        self.category = category
+        self.text = text
+        self.metadata = _PyMuPDFMetadata(page_number)
+        
+    def __str__(self):
+        return self.text
 
-    # Ensure image output dir exists
-    image_dir = PROCESSED_DIR / "images"
-    image_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        from unstructured.partition.pdf import partition_pdf
-        elements = partition_pdf(
-            filename=pdf_path,
-            strategy=strategy,
-        )
-        print(f"      Raw elements extracted: {len(elements)}")
-        return elements
-    except (ImportError, Exception) as e:
-        print(f"[WARNING] Unstructured partition unavailable/failed ({type(e).__name__}: {e}). Using PyMuPDF text parser fallback...")
-        return parse_pdf_with_pymupdf_fallback(pdf_path)
-
+class _PyMuPDFMetadata:
+    """Lightweight metadata class compatible with Unstructured metadata interface."""
+    def __init__(self, page_number: int):
+        self.page_number = page_number
+        self.coordinates = None
+        self.parent_id = None
+        self.text_as_html = None
+        self.image_path = None
 
 
 def elements_to_dicts(elements: list, paper_id: str) -> list:
     """
-    Convert Unstructured elements to serializable dicts with metadata.
+    Convert element objects to serializable dicts with metadata.
     
     Each element dict contains:
     - element_id: unique ID
@@ -213,8 +213,6 @@ def print_element_summary(element_dicts: list):
 
 def extract_tables_with_pdfplumber(pdf_path: str, paper_id: str) -> list:
     """Extract tables using pdfplumber and format as HTML tables."""
-    import pdfplumber
-
     table_elements = []
     with pdfplumber.open(pdf_path) as pdf:
         for page_idx, page in enumerate(pdf.pages, start=1):
@@ -260,8 +258,6 @@ def extract_tables_with_pdfplumber(pdf_path: str, paper_id: str) -> list:
 
 def extract_images_with_pymupdf(pdf_path: str, paper_id: str) -> list:
     """Extract embedded images using PyMuPDF (pymupdf)."""
-    import pymupdf as fitz
-
     image_dir = PROCESSED_DIR / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
@@ -311,7 +307,7 @@ def extract_images_with_pymupdf(pdf_path: str, paper_id: str) -> list:
 def ingest_paper(pdf_path: str, force_reparse: bool = False) -> tuple:
     """
     Full ingestion pipeline for a single paper.
-    Combines Unstructured.io parsing with pdfplumber table extraction
+    Combines PyMuPDF text parsing with pdfplumber table extraction
     and PyMuPDF image extraction to ensure high accuracy.
     
     Returns:
@@ -326,11 +322,11 @@ def ingest_paper(pdf_path: str, force_reparse: bool = False) -> tuple:
             print(f"[OK] Using cached parse for paper_id={paper_id}")
             return paper_id, cached
 
-    # 1. Parse text & structure using Unstructured (fast strategy as fallback if hi_res lacks OCR dependencies)
+    # 1. Parse text & structure using PyMuPDF
     elements = load_and_parse_pdf(pdf_path)
     element_dicts = elements_to_dicts(elements, paper_id)
 
-    # 2. Check if tables or images are missing from unstructured output
+    # 2. Always enrich with pdfplumber tables and PyMuPDF images
     has_tables = any(e["category"] == "Table" for e in element_dicts)
     has_images = any(e["category"] == "Image" for e in element_dicts)
 
