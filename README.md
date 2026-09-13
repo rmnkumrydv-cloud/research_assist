@@ -1,5 +1,6 @@
 # 🔬 Advanced Multimodal RAG System for Research Papers
 
+[![Live Demo](https://img.shields.io/badge/Streamlit-Live%20Demo-ff4b4b?logo=streamlit&logoColor=white)](https://researchbyrag.streamlit.app/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Framework](https://img.shields.io/badge/framework-Streamlit%20%7C%20LangChain-red.svg)](https://streamlit.io/)
 [![LLM Provider](https://img.shields.io/badge/LLM-Groq%20%28Qwen--2.5--32b%20%2F%20Qwen--3.8--27b%29-orange.svg)](https://console.groq.com)
@@ -8,6 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An end-to-end production-grade **Multimodal Retrieval-Augmented Generation (RAG) system** engineered specifically for complex scientific PDFs and research papers. It handles dense text, complex tabular data, embedded figures, section hierarchy, hybrid sparse-dense retrieval, safety guardrails, and rigorous RAGAS benchmarks.
+
+🚀 **Live Web Application**: [https://researchbyrag.streamlit.app/](https://researchbyrag.streamlit.app/)
 
 ---
 
@@ -166,10 +169,11 @@ This will run RAGAS against the test dataset and update `data/processed/eval_sco
 
 ## 🌐 Cloud Deployment
 
-This project is fully optimized for **Streamlit Community Cloud**:
-- Auto-detects `st.secrets["GROQ_API_KEY"]` when hosted in the cloud.
-- Lightweight zero-C-binary extraction setup (`pdfplumber` + `PyMuPDF`).
-- Refer to [DEPLOYMENT.md](DEPLOYMENT.md) for full step-by-step instructions.
+This project is deployed live on **Streamlit Community Cloud**:
+- 🔗 **Live URL**: [https://researchbyrag.streamlit.app/](https://researchbyrag.streamlit.app/)
+- **Configuration**: Auto-detects `st.secrets["GROQ_API_KEY"]` when hosted in the cloud.
+- **Engine**: Lightweight zero-C-binary extraction setup (`pdfplumber` + `PyMuPDF`).
+- Refer to [DEPLOYMENT.md](DEPLOYMENT.md) for step-by-step deployment instructions.
 
 ---
 
